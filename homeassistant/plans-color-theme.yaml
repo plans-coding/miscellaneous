@@ -1,0 +1,18 @@
+plans:
+  modes:
+    light:
+      primary-color: "#1fa874"
+      primary-background-color: "#f2fbf8"
+      card-background-color: "#f9fbf9"
+      state-icon-color: "#1fa874"
+      secondary-text-color: "#1fa874"
+      app-header-background-color: "#f2fbf8" # Header
+      app-header-text-color: "#000000" # Header
+
+    dark:
+      primary-color: "#00859c"
+      primary-background-color: "#001d22"
+      card-background-color: "#003039"
+      state-icon-color: "#00859c"
+      secondary-text-color: "#017f75"
+      app-header-background-color: "#001d22" # Header
