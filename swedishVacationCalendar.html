@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20height%3D%2224px%22%20viewBox%3D%220%20-960%20960%20960%22%20width%3D%2224px%22%20fill%3D%22%23e3e3e3%22%3E%3Cpath%20d%3D%22M200-80q-33%200-56.5-23.5T120-160v-560q0-33%2023.5-56.5T200-800h40v-80h80v80h320v-80h80v80h40q33%200%2056.5%2023.5T840-720v560q0%2033-23.5%2056.5T760-80H200Zm0-80h560v-400H200v400Zm0-480h560v-80H200v80Zm0%2000v-80%2080Zm280%20240q-17%200-28.5-11.5T440-440q0-17%2011.5-28.5T480-480q17%200%2028.5%2011.5T520-440q0%2017-11.5%2028.5T480-400Zm-160%200q-17%200-28.5-11.5T280-440q0-17%2011.5-28.5T320-480q17%200%2028.5%2011.5T360-440q0%2017-11.5%2028.5T320-400Zm320%200q-17%200-28.5-11.5T600-440q0-17%2011.5-28.5T640-480q17%200%2028.5%2011.5T680-440q0%2017-11.5%2028.5T640-400ZM480-240q-17%200-28.5-11.5T440-280q0-17%2011.5-28.5T480-320q17%200%2028.5%2011.5T520-280q0%2017-11.5%2028.5T480-240Zm-160%200q-17%200-28.5-11.5T280-280q0-17%2011.5-28.5T320-320q17%200%2028.5%2011.5T360-280q0%2017-11.5%2028.5T320-240Zm320%200q-17%200-28.5-11.5T600-280q0-17%2011.5-28.5T640-320q17%200%2028.5%2011.5T680-280q0%2017-11.5%2028.5T640-240Z%22/%3E%3C/svg%3E">
+
+    <title>Swedish Calendar</title>
+
+    <style>
+
+    body {font-family:arial;}
+
+    a, a:visited {color:#000;}
+
+    table {
+        border-collapse: collapse;
+        width: 100%;
+        max-width: 100%;
+        table-layout: fixed;
+    }
+
+    th, td {
+        border: 1px solid #ddd;
+        padding: 3pt;
+        height: 28pt;
+        vertical-align: middle;
+    }
+
+    td {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size:10pt;
+    }
+
+    th {
+        background-color: #f4f4f4;
+        width: 30pt; /* Allows headers to size naturally */
+        white-space: normal; /* Allows wrapping if needed */
+    }
+
+      @media print {
+        .no-print {
+            display: none;
+        }
+    }
+
+</style>
+
+</head>
+<body>
+
+<script async type = "text/javascript" src = "https://cdn.jsdelivr.net/npm/php-wasm/php-tags.jsdelivr.mjs"></script>
+
+    <div id="output"></div>
+    <div id="input" style="display:none;"></div>
+
+
+    <script>
+        const year = new URLSearchParams(window.location.search).get("year");
+        document.getElementById("input").innerHTML = year;
+    </script>
+
+    <script type = "text/php" data-stdout = "#output" data-stdin = "#input">
+
+    <?php
+
+    //setlocale(LC_ALL, 'sv_SE.UTF-8');
+
+    $year = file_get_contents('php://stdin');
+
+    if ( $year == "" ) { $year = (new DateTime("$year-01-05"))->format("Y"); }
+
+    echo '<div class="no-print">';
+    $currYear = (new DateTime())->format("Y");
+    echo '<a href="?year='.$currYear.'">'.$currYear.'</a>';
+    $nextYear = (new DateTime())->modify('+1 year')->format("Y");
+    echo ' <a href="?year='.$nextYear.'">'.$nextYear.'</a>';
+    $nextNextYear = (new DateTime())->modify('+2 year')->format("Y");
+    echo ' <a href="?year='.$nextNextYear.'">'.$nextNextYear.'</a>';
+    echo '</div>';
+
+    echo '<h1>Svenska ledighetskalendern '.$year.'</h1>';
+
+    // RANGE
+
+        // First week of year
+        $jan1 = new DateTime("$year-01-01");
+        $jan1->modify('monday this week');
+
+        // Last week of year
+        $dec31 = new DateTime("$year-12-31");
+        $dec31->modify('sunday this week');
+
+    // HOLIDAYS
+
+        // Epiphany
+            $epiphanyEve = (new DateTime("$year-01-05"))->format("Y-m-d");
+            $epiphanyDay = (new DateTime("$year-01-06"))->format("Y-m-d");
+
+        // Easter
+            $base = new DateTime("$year-03-21");
+            $days = easter_days($year);
+            $easterSunday = $base->modify("+$days days")->format("Y-m-d");
+
+            $goodFriday = new DateTime($easterSunday);
+            $goodFriday = $goodFriday->modify('-2 days')->format("Y-m-d");
+
+            $easterGreen1 = new DateTime($easterSunday);
+            $easterGreen1 = $easterGreen1->modify('-3 days')->format("Y-m-d");
+            $easterGreen2 = new DateTime($easterSunday);
+            $easterGreen2 = $easterGreen2->modify('-4 days')->format("Y-m-d");
+            $easterGreen3 = new DateTime($easterSunday);
+            $easterGreen3 = $easterGreen3->modify('-5 days')->format("Y-m-d");
+            $easterGreen4 = new DateTime($easterSunday);
+            $easterGreen4 = $easterGreen4->modify('-6 days')->format("Y-m-d");
+
+            $easterMonday = new DateTime($easterSunday);
+            $easterMonday = $easterMonday->modify('+1 days')->format("Y-m-d");
+
+        // Walpurgis Night
+            $walpurgisNight = (new DateTime("$year-04-30"))->format("Y-m-d");
+            $may1 = (new DateTime("$year-05-01"))->format("Y-m-d");
+
+        // Feast of the Ascension
+            $feastAscension = (new DateTime($easterSunday))->modify("+39 days")->format("Y-m-d");
+
+        // National Day
+            $june6 = (new DateTime("$year-06-06"))->format("Y-m-d");
+
+        // Midsummer
+            // Midsummer: Find June 19 of the given year
+            $midsummerStart = new DateTime("$year-06-19");
+            // Find the first Friday on or after June 19
+            while ($midsummerStart->format("N") != 5) { // 5 = Friday
+                $midsummerStart->modify('+1 day');
+            }
+            $midsummerEve = $midsummerStart->format("Y-m-d");
+            $midsummerDay = $midsummerStart->modify('+1 day')->format("Y-m-d");
+
+        // Christmas
+            $christmasEve = (new DateTime("$year-12-24"))->format("Y-m-d");
+            $christmasDay = (new DateTime("$year-12-25"))->format("Y-m-d");
+            $boxingDay = (new DateTime("$year-12-26"))->format("Y-m-d");
+
+        // New year
+            $newYearsEve = (new DateTime("$year-12-31"))->format("Y-m-d");
+            $newYearsDay = (new DateTime("$year-12-31"))->modify('+1 day')->format("Y-m-d");
+
+    // HOLIDAY ARRAYS
+
+    $holidayArray = [
+        [$epiphanyEve, "Trettondagsafton"],
+        [$epiphanyDay, "Trettondagen"],
+        [$goodFriday, "Långfredagen"],
+        [$easterSunday, "Påskdagen"],
+        [$easterMonday, "Annandag Påsk"],
+        [$feastAscension, "Kristi Himmelsfärdsdag"],
+        [$may1, "Första Maj"],
+        [$june6, "Sveriges nationaldag"],
+        [$midsummerEve, "Midsommarafton"],
+        [$midsummerDay, "Midsommardagen"],
+        [$christmasEve, "Julafton"],
+        [$christmasDay, "Juldagen"],
+        [$boxingDay, "Annandag Jul"],
+        [$newYearsEve, "Nyårsafton"],
+        [$newYearsDay, "Nyårsdagen"]
+    ];
+
+    $greenDaysArray = [
+        [$easterGreen1, "Påskveckan"],
+        [$easterGreen2, "Påskveckan"],
+        [$easterGreen3, "Påskveckan"],
+        [$easterGreen4, "Skärtorsdagen"],
+        [$walpurgisNight, "Valborgsmässoafton"]
+    ];
+
+    // DRAW CALENDAR
+
+    $dateArray = [];
+    $currentDate = clone $jan1;
+
+    while ($currentDate <= $dec31) {
+        $dateArray[] = $currentDate->format("Y-m-d");
+        $currentDate->modify('+1 day');
+    }
+
+    // Chunk the dates array into pieces of 7 days
+    $chunkedDates = array_chunk($dateArray, 7);
+
+    echo '<table style="">';
+
+    foreach ($chunkedDates as $index => $chunk) {
+        echo "<tr>";
+        $weekNumber = (new DateTime($chunk[0]))->format("W");
+        echo '<th style="background-color:#ccc;">'.$weekNumber.'</th>';
+
+        foreach ($chunk as $date) {
+
+            $index = array_search($date, array_column($holidayArray, 0));
+            $color = "";
+            $holidayName = "";
+            $indexGreen = array_search($date, array_column($greenDaysArray, 0));
+            $greenName = "";
+
+            if ( (new DateTime($date))->format("N") == "6" || (new DateTime($date))->format("N") == "7" ) {
+                $color = "background-color:#eee;";
+                if ( (new DateTime($date))->format("N") == "7" ) { $color .= "color:#EE4B2B;"; }
+            } else if ( $index !== false ) {
+                $color = "background-color:#FFCCCB;";
+                $holidayName = $holidayArray[$index][1];
+            } else if ( $indexGreen !== false ) {
+                $color = "background-color:#C1E1C1;";
+                $greenName = $greenDaysArray[$indexGreen][1];
+            } else if ( (new DateTime($date))->format("W") == "9" || (new DateTime($date))->format("W") == "44" ) {
+                $color = "background-color:#C1E1C1;";
+            } else {
+                $color = "";
+            }
+            $string = strtolower((new DateTime($date))->format("d M"));
+            $string = str_replace("oct", "okt", $string);
+            $string = str_replace("y", "j", $string);
+            echo '<td style="'.$color.'">'.$string.' '.$holidayName.' '.$greenName.'</td>';
+        }
+        echo "</tr>";
+    }
+
+    echo '</table>';
+
+</script>
+
+
+</body>
+</html>
