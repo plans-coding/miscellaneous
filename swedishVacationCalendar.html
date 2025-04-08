@@ -80,6 +80,7 @@
     echo ' <a href="?year='.$nextYear.'">'.$nextYear.'</a>';
     $nextNextYear = (new DateTime())->modify('+2 year')->format("Y");
     echo ' <a href="?year='.$nextNextYear.'">'.$nextNextYear.'</a>';
+    echo '<br /><span>Denna semesterplanerarkalender visar enbart röda dagar som infaller måndag till fredag.</span>';
     echo '</div>';
 
     echo '<h1>Svenska ledighetskalendern '.$year.'</h1>';
