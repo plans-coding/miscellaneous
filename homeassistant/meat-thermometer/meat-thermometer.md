@@ -27,6 +27,8 @@ The resistance over the thermistor is (read more about [voltage divider](https:/
 
 $$R_{NTC} = \frac{ V_{3.3} * R_{100} }{ V_{3.3} - V_{A0} } = \frac{ 3.3*10^5 }{ 3.3 - V_{A0} }$$
 
+Some guides mention [Steinhart–Hart equation](https://en.wikipedia.org/wiki/Steinhart%E2%80%93Hart_equation). Since Esphome handle this we do not need to use the equation on our own.
+
 ## Esphome
 
 Navigate to your Esphome installation, e.g. http://localhost:6052/ and click **New Device**.
