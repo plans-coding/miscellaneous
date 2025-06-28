@@ -29,6 +29,8 @@ $$R_{NTC} = \frac{ V_{3.3} * R_{100} }{ V_{3.3} - V_{A0} } = \frac{ 3.3*10^5 }{ 
 
 ## Esphome
 
+Navigate to your Esphome installation, e.g. http://localhost:6052/ and click **New Device**.
+
 ### Reading
 > [!NOTE]
 > The variable resistor (i.e. our thermistor) is close to GND in the circuit above => DOWNSTREAM
@@ -38,7 +40,29 @@ $$R_{NTC} = \frac{ V_{3.3} * R_{100} }{ V_{3.3} - V_{A0} } = \frac{ 3.3*10^5 }{ 
 
 In our case, due to the high resistance, the current through the thermistor is very small. I guess self-heating does not need to be taken into account.
 
-### Crucial part of Yaml Configuration
+### Crucial part of the Yaml Configuration
 ```
-?
+sensor:
+  - platform: ntc
+    sensor: resistance_ntc
+    calibration:
+      - 25.704kOhm -> 16°C
+      - 23.364kOhm -> 23°C
+      - 12.221kOhm -> 57°C
+    name: "Probe Temperature"
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+
+  - platform: resistance
+    id: resistance_ntc
+    sensor: a0_voltage
+    configuration: DOWNSTREAM
+    resistor: 100kOhm
+    name: "Probe Resistance"
+
+  - platform: adc
+    id: a0_voltage
+    pin: A0
+    update_interval: 5s
+    name: "A0 Voltage"
 ```
