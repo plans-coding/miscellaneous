@@ -15,7 +15,7 @@ The 3.3 V, A0 and GND are connected to the corresponding pins on the D1 mini.
 
 ## Calibration Input
 
-Measure the voltage at A0 for different temperatures on the probe.
+Measure the voltage at A0 for different temperatures on the probe. We will use this data when we configure the circiut in Esphome.
 
 | Temperature measured by a reference thermometer | Voltage $V_{A0}$ measured at A0 | Resistance $R_{NTC}$ over thermistor (calculated) |
 |-|-|-|
