@@ -40,7 +40,7 @@ Navigate to your Esphome installation, e.g. http://localhost:6052/ and click **N
 * https://esphome.io/components/sensor/resistance
 * https://esphome.io/components/sensor/ntc.html
 
-In our case, due to the high resistance, the current through the thermistor is very small. I guess self-heating does not need to be taken into account.
+In our case, due to the high resistance, the current through the thermistor is very small. I guess self-heating does not need to be taken into account in our case.
 
 ### Crucial part of the Yaml Configuration
 ```
