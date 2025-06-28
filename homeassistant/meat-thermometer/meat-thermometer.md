@@ -11,12 +11,18 @@ The probe from Ikea Fantast is rendered as a thermistor with NTC (Negative Tempe
 
 ![img](circuit.svg)
 
-The 3.3 V, A0 and GND are connected to the corresponding pins on the D1 mini.
+The 3.3 V, A0 and GND are connected to the corresponding pins on the D1 mini.[
 
 ## Calibration
 
-| Temperature measured by a reference thermometer | Voltage measured at A0 |
-|-|-|
-| 16 °C | 0.67480 |
-| 23 °C | 0.62500 |
-| 57 °C | 0.35938 |
+| Temperature measured by a reference thermometer | Voltage $V_{A0}$ measured at A0 | Resistance $R_{NTC}$ over thermistor (calculated) |
+|-|-|-|
+| 16 °C | 0.67480 V | 25.704 kOhm |
+| 23 °C | 0.62500 V | 23.364 kOhm |
+| 57 °C | 0.35938 V | 12.221 kOhm |
+
+The resistance over the thermistor is
+
+$$R_{NTC} = \frac{ V_{3.3} * R_{100} }{ V_{3.3} - V_{A0} } = \frac{ 3.3*10^5 }{ 3.3 - V_{A0} }$$
+
+Read more about [voltage divider](https://en.wikipedia.org/wiki/Voltage_divider#General_case)
