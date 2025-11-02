@@ -1,0 +1,4 @@
+/* Custom background color in dark mode */
+html.dark .bg-light {
+    background-color: #022626;
+}
