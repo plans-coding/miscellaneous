@@ -1,6 +1,6 @@
 """
-eWeLink BMT01 BLE BBQ Thermometer Client version 2026-05-03
-===========================================================
+eWeLink BMT01 BLE BBQ Thermometer Client version 2026-05-03 rev B
+=================================================================
 Re-implemented from the eWeLink JS bundle (output.js, Hermes bytecode).
 
 Auth channel:
@@ -24,11 +24,11 @@ Temperature (PUSH, source=DEVICE, byte5=0xD4):
 
 Temperature (RESP, source=APP, byte5=0x3D):
   Same uint16-LE °C values but each probe's two bytes are XOR'd with a
-  per-probe 2-byte mask before embedding in the payload.  The masks are
-  device-specific (derived empirically from one captured frame):
-    P1: BD 72   P2: 11 02   P3: 13 DE   P4: 6A 94
-  Derivation: mask[i] = resp_decoded_bytes[i] XOR push_decoded_bytes[i]
-  (verified: all NOT_ACTIVE probes → FF FF, P2 @ 22°C → 16 00 ✓)
+  per-probe 2-byte mask before embedding in the payload.  Masks are
+  device-specific: mask[i] = MD5(apikey)[2+i*2:4+i*2] XOR secondary_key[i*2:i*2+2]
+  where secondary_key = 38 A3 50 AD ED 6F 19 76 (firmware constant).
+  For this device: P1=BD 72  P2=1E 02  P3=13 DE  P4=6A 94.
+  The same masks apply to PROBE_PRESET_SETTING outbound payloads.
 
 GATT:
   bbb0 = WRITE (TX)   bbb1 = NOTIFY (RX)   bbb3 = NOTIFY2 (RX, secondary)
@@ -42,30 +42,52 @@ import asyncio
 import base64
 import hashlib
 import struct
+import sys
+import time
 import uuid
+import builtins
 from datetime import datetime
 
 from bleak import BleakClient, BleakError
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-# ── Device config ────────────────────────────────────────────────────────────
+try:
+    import readline
+except ImportError:
+    readline = None
+
+_orig_print = builtins.print
+
+def _async_print(*args, **kwargs):
+    if kwargs.get('file', sys.stdout) in (None, sys.stdout):
+        sys.stdout.write('\r\x1b[2K')
+        _orig_print(*args, **kwargs)
+        if readline:
+            buf = readline.get_line_buffer()
+            sys.stdout.write(f"Alarm input> {buf}")
+        else:
+            sys.stdout.write("Alarm input> ")
+        sys.stdout.flush()
+    else:
+        _orig_print(*args, **kwargs)
+
+builtins.print = _async_print
+
 MAC        = "XX:XX:XX:XX:XX:XX"
 DEVICE_KEY = "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
 
 NOTIFY_UUID  = "0000bbb1-0000-1000-8000-00805f9b34fb"
-NOTIFY_UUID2 = "0000bbb3-0000-1000-8000-00805f9b34fb"  # second notify, per Greywood
+NOTIFY_UUID2 = "0000bbb3-0000-1000-8000-00805f9b34fb"  
 WRITE_UUID   = "0000bbb0-0000-1000-8000-00805f9b34fb"
 
-POLL_INTERVAL = 3   # seconds between PROBE_TEMPERATURE_REQUEST polls
+POLL_INTERVAL = 3   
 
-# ── Crypto ────────────────────────────────────────────────────────────────────
 _AES_KEY = bytes.fromhex(hashlib.md5(DEVICE_KEY.encode()).hexdigest())
 _AES_IV  = b'0000000000000000'
-_XOR_KEY = hashlib.md5(DEVICE_KEY.encode()).digest()   # 16 raw bytes
+_XOR_KEY = hashlib.md5(DEVICE_KEY.encode()).digest()   
 
 APP_UUID  = str(uuid.uuid4())
 
-# ── TX sequence number ───────────────────────────────────────────────────────
 _tx_tsn = 0
 
 def _next_tsn() -> int:
@@ -74,16 +96,14 @@ def _next_tsn() -> int:
     _tx_tsn = (_tx_tsn + 1) % 256
     return tsn
 
-# ── Last good temperatures from a PUSH (source=DEVICE) frame ─────────────────
 _last_push_probes: list[dict] | None = None
 
-# ── BLE client reference ─────────────────────────────────────────────────────
+_ticket_queue: asyncio.Queue[int] | None = None
+_last_ticket: int | None = None
+_last_ticket_mono: float = 0.0
+_pending_ticket_responses: dict[int, asyncio.Future[dict]] = {}
+
 _client: BleakClient | None = None
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# AES helpers (auth channel only)
-# ════════════════════════════════════════════════════════════════════════════
 
 def _aes_encrypt(plaintext: str) -> str:
     pad = 16 - (len(plaintext) % 16)
@@ -101,13 +121,6 @@ def _aes_decrypt(b64: str) -> str:
     return raw[:-raw[-1]].decode()
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# XOR crypto (control channel — encrypt === decrypt, XOR is self-inverse)
-# Mirrors encryptUtils.encrypt in output.js (line 5384648):
-#   splice input in 16-byte blocks; for each byte at index i within block,
-#   XOR with _XOR_KEY[i].
-# ════════════════════════════════════════════════════════════════════════════
-
 def _xor_crypt(data: bytes) -> bytes:
     out = bytearray()
     for start in range(0, len(data), 16):
@@ -116,10 +129,6 @@ def _xor_crypt(data: bytes) -> bytes:
             out.append(b ^ _XOR_KEY[i])
     return bytes(out)
 
-
-# ════════════════════════════════════════════════════════════════════════════
-# Protocol constants (from ControlCommand enum, output.js line 5384243)
-# ════════════════════════════════════════════════════════════════════════════
 
 class CC:
     BATTERY_LEVEL_REQUEST            = 257
@@ -154,12 +163,6 @@ _PROBE_SENTINELS = {
 }
 
 
-# Per-probe masks for 3D RESP PROBE_TEMPERATURE_RESPONSE frames.
-# Each probe's uint16-LE °C bytes are XOR'd with a 2-byte probe mask before
-# being placed in the RESP payload.  The masks equal:
-#   mask[i] = _XOR_KEY[2+i*2 : 4+i*2] XOR _RESP_SECONDARY_KEY[i*2 : i*2+2]
-# _RESP_SECONDARY_KEY is a fixed 8-byte firmware constant (verified across
-# multiple captures against all 4 probes and several temperatures):
 _RESP_SECONDARY_KEY = bytes([0x38, 0xA3, 0x50, 0xAD, 0xED, 0x6F, 0x19, 0x76])
 _RESP_PROBE_MASKS = [
     bytes([_XOR_KEY[2 + i*2] ^ _RESP_SECONDARY_KEY[i*2],
@@ -169,7 +172,6 @@ _RESP_PROBE_MASKS = [
 
 
 def _unmask_resp_payload(payload_content: bytes) -> bytes:
-    """Convert 3D RESP probe encoding back to standard uint16-LE °C bytes."""
     out = bytearray()
     for i, mask in enumerate(_RESP_PROBE_MASKS):
         ofs = i * 2
@@ -180,22 +182,93 @@ def _unmask_resp_payload(payload_content: bytes) -> bytes:
     return bytes(out)
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# Control frame parser
-# Mirrors extractControlMessage in output.js (line 5385210)
-# ════════════════════════════════════════════════════════════════════════════
+NO_ALARM = 0x0100
+_alarm_targets: list[int | None] = [None, None, None, None]
+PRESET_EMPTY = 0
+PRESET_UPPER_TEMP = 1
+PRESET_RANGE = 2
+WIRE_PROBE_INDEX_BASE = 0
+
+
+def _build_preset_payload(targets: list[int | None]) -> bytes:
+    probe = bytearray()
+    for i in range(4):
+        t = NO_ALARM if (i >= len(targets) or targets[i] is None) else int(targets[i])
+        lo, hi = t & 0xFF, (t >> 8) & 0xFF
+        probe.append(lo ^ _RESP_PROBE_MASKS[i][0])
+        probe.append(hi ^ _RESP_PROBE_MASKS[i][1])
+    x0 = 0xDA
+    for b in probe:
+        x0 ^= b
+    return bytes(probe) + bytes([x0, 0x1E, 0x60, 0xA8])
+
+
+def _le16(value: int) -> bytes:
+    return struct.pack('<H', int(value) & 0xFFFF)
+
+
+def _build_upper_alarm_payload(probe: int, temp_c: int | None, timer_ms: int = 0) -> bytes:
+    wire_probe = probe - 1 + WIRE_PROBE_INDEX_BASE
+    if temp_c is None:
+        preset_type = PRESET_EMPTY
+        lower_c = lower_f = upper_c = upper_f = NO_ALARM
+    else:
+        preset_type = PRESET_UPPER_TEMP
+        upper_c = int(temp_c)
+        upper_f = round(upper_c * 9 / 5 + 32)
+        lower_c = upper_c
+        lower_f = upper_f
+
+    timer_seconds = int(timer_ms / 1000)
+    return (
+        bytes([wire_probe, preset_type])
+        + _le16(lower_c)
+        + _le16(lower_f)
+        + _le16(upper_c)
+        + _le16(upper_f)
+        + _le16(timer_seconds)
+        + bytes([int(timer_ms) & 0xFF])
+    )
+
+
+def _build_captured_alarm_payload(temp_c: int | None) -> bytes:
+    if temp_c is None:
+        values = [NO_ALARM, NO_ALARM, NO_ALARM, NO_ALARM]
+    else:
+        temp_f = round(temp_c * 9 / 5 + 32)
+        values = [NO_ALARM, int(temp_c), int(temp_f), int(temp_c)]
+    return _build_preset_payload(values)
+
+
+async def set_probe_alarm(probe: int, temp_c: int | None):
+    if not (1 <= probe <= 4):
+        raise ValueError(f"probe must be 1-4, got {probe}")
+    if temp_c is not None and not (20 <= temp_c <= 82):
+        raise ValueError(f"temp_c must be 20-82 C, got {temp_c}")
+
+    _alarm_targets[probe - 1] = temp_c
+    payload = _build_upper_alarm_payload(probe, temp_c)
+
+    try:
+        response = await _send_outputjs_alarm_control(payload, timeout=7.0)
+    except TimeoutError as e:
+        print(f"ALARM: {e} — command was sent but no ACK arrived")
+        return
+
+    label = f"{temp_c}°C" if temp_c is not None else "disabled"
+    if response.get('command') != CC.COMMON_RESPONSE:
+        name = response.get('name', f"0x{response.get('command', 0):04X}")
+        print(f"ALARM P{probe}: unexpected response {name}; not marking as set")
+        return
+
+    status = response.get('status')
+    if status == 0:
+        print(f"ALARM SET P{probe}: {label}")
+    else:
+        print(f"ALARM P{probe}: {label} rejected, response status={status}")
+
 
 def _extract_control_message(data: bytes) -> dict | None:
-    """Parse an inbound control-channel BLE frame.
-
-    Frame layout:
-      [cmd_lo cmd_hi] [len_lo len_hi] [...XOR-encrypted payload...]
-    Decrypted payload:
-      [flags] [rx_tsn] [...payloadContent...]
-    flags bits (LSB-first per byteToBits in output.js):
-      bit0 = source      (0=APP, 1=DEVICE)
-      bit1 = needResponse (0=False, 1=True)
-    """
     if len(data) < 4:
         return None
     command     = struct.unpack_from('<H', data, 0)[0]
@@ -205,8 +278,8 @@ def _extract_control_message(data: bytes) -> dict | None:
         print(f"[WARN] control frame length mismatch: expected={data_length} got={len(decrypted)}")
         return None
     flags           = decrypted[0]
-    source          =  flags & 0x01          # bit 0: 1=DEVICE push, 0=RESP/housekeeping
-    need_response   = (flags >> 1) & 0x01    # bit 1
+    source          =  flags & 0x01          
+    need_response   = (flags >> 1) & 0x01    
     rx_tsn          = decrypted[1]
     payload_content = bytes(decrypted[2:])
     return {
@@ -218,11 +291,6 @@ def _extract_control_message(data: bytes) -> dict | None:
         'payload_content': payload_content,
     }
 
-
-# ════════════════════════════════════════════════════════════════════════════
-# Temperature parser
-# Mirrors bytesToProbeTemperature (output.js line 5386357)
-# ════════════════════════════════════════════════════════════════════════════
 
 def _decode_probe(raw: int) -> dict:
     sentinel = _PROBE_SENTINELS.get(raw)
@@ -243,23 +311,156 @@ def _parse_probe_temperatures(payload_content: bytes) -> list[dict]:
     return probes
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# Control frame builder
-# Mirrors createControlMessage in output.js (line 5385069)
-# ════════════════════════════════════════════════════════════════════════════
-
 def _build_control_frame(command: int, need_response: bool = True,
-                         payload_content: bytes = b'') -> bytes:
+                         payload_content: bytes = b'',
+                         token_tsn: int | None = None) -> bytes:
     flags       = (0 << 0) | ((1 if need_response else 0) << 1)
-    tx_tsn      = _next_tsn()
+    tx_tsn      = token_tsn if token_tsn is not None else _next_tsn()
     raw_payload = bytes([flags, tx_tsn]) + payload_content
     encrypted   = _xor_crypt(raw_payload)
     return struct.pack('<HH', command, len(encrypted)) + encrypted
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# Transport helpers
-# ════════════════════════════════════════════════════════════════════════════
+def _build_ticketed_frame(command: int, ticket: int, payload_content: bytes = b'') -> bytes:
+    raw_payload = bytes([0x89, ticket]) + payload_content
+    return struct.pack('<HH', command, len(raw_payload)) + raw_payload
+
+
+def _build_captured_alarm_frame(ticket: int, payload_content: bytes) -> bytes:
+    raw_payload = bytes([0xEB, ticket ^ _XOR_KEY[1]]) + payload_content
+    encrypted = _xor_crypt(raw_payload)
+    return struct.pack('<HH', CC.PROBE_PRESET_SETTING, len(encrypted)) + encrypted
+
+
+def _build_outputjs_alarm_frame(ticket: int, payload_content: bytes) -> tuple[bytes, int]:
+    token_tsn = ticket ^ _XOR_KEY[1]
+    frame = _build_control_frame(
+        CC.PROBE_PRESET_SETTING,
+        need_response=True,
+        payload_content=payload_content,
+        token_tsn=token_tsn,
+    )
+    return frame, token_tsn
+
+
+def _live_ticket_marker(data: bytes) -> int | None:
+    if len(data) >= 6 and data[:4] == b'\x04\x01\x0A\x00' and data[4] in (0x82, 0xD4):
+        return data[4]
+    return None
+
+
+def _offer_ticket(ticket: int):
+    global _last_ticket, _last_ticket_mono
+    _last_ticket = ticket
+    _last_ticket_mono = time.monotonic()
+    if _ticket_queue is None:
+        return
+    try:
+        _ticket_queue.put_nowait(ticket)
+    except asyncio.QueueFull:
+        try:
+            _ticket_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        _ticket_queue.put_nowait(ticket)
+
+
+async def _next_ticket(timeout: float = 5.0) -> int:
+    if _ticket_queue is None:
+        raise TimeoutError("ticket queue is not ready")
+    try:
+        return await asyncio.wait_for(_ticket_queue.get(), timeout=timeout)
+    except asyncio.TimeoutError as e:
+        raise TimeoutError("timeout waiting for fresh live telemetry ticket") from e
+
+
+def _parse_raw_ticket_response(data: bytes) -> dict | None:
+    if len(data) < 6 or data[4] != 0x8E:
+        return None
+    command = struct.unpack_from('<H', data, 0)[0]
+    data_length = struct.unpack_from('<H', data, 2)[0]
+    payload = data[4:]
+    if data_length != len(payload):
+        print(f"[WARN] raw frame length mismatch: expected={data_length} got={len(payload)}")
+        return None
+    content = bytes(payload[2:])
+    msg = {
+        'command': command,
+        'name': _CC_NAMES.get(command, f'0x{command:04X}'),
+        'marker': payload[0],
+        'ticket': payload[1],
+        'payload_content': content,
+        'status': None,
+    }
+    if command == CC.COMMON_RESPONSE and len(content) >= 2:
+        msg['status'] = struct.unpack_from('<H', content, 0)[0]
+    return msg
+
+
+def _finish_pending_response(ticket: int, msg: dict):
+    future = _pending_ticket_responses.get(ticket)
+    if future and not future.done():
+        future.set_result(msg)
+
+
+async def _send_ticketed_control(command: int, payload_content: bytes = b'',
+                                 timeout: float = 5.0) -> dict:
+    ticket = await _next_ticket(timeout=timeout)
+    frame = _build_ticketed_frame(command, ticket, payload_content)
+
+    loop = asyncio.get_running_loop()
+    response_future: asyncio.Future[dict] = loop.create_future()
+    _pending_ticket_responses[ticket] = response_future
+    print(f"TX ticket=0x{ticket:02X}: {_fmt_hex(frame)}")
+    try:
+        await _ble_write(frame)
+        try:
+            return await asyncio.wait_for(response_future, timeout=timeout)
+        except asyncio.TimeoutError as e:
+            raise TimeoutError(f"timeout waiting for response to ticket 0x{ticket:02X}") from e
+    finally:
+        _pending_ticket_responses.pop(ticket, None)
+
+
+async def _send_captured_alarm_control(payload_content: bytes,
+                                       timeout: float = 5.0) -> dict:
+    ticket = await _next_ticket(timeout=timeout)
+    frame = _build_captured_alarm_frame(ticket, payload_content)
+
+    loop = asyncio.get_running_loop()
+    response_future: asyncio.Future[dict] = loop.create_future()
+    _pending_ticket_responses[ticket] = response_future
+    print(f"TX captured-alarm ticket=0x{ticket:02X}: {_fmt_hex(frame)}")
+    try:
+        await _ble_write(frame)
+        try:
+            return await asyncio.wait_for(response_future, timeout=timeout)
+        except asyncio.TimeoutError as e:
+            raise TimeoutError(f"timeout waiting for response to ticket 0x{ticket:02X}") from e
+    finally:
+        _pending_ticket_responses.pop(ticket, None)
+
+
+async def _send_outputjs_alarm_control(payload_content: bytes,
+                                       timeout: float = 5.0) -> dict:
+    ticket = await _next_ticket(timeout=timeout)
+    frame, token_tsn = _build_outputjs_alarm_frame(ticket, payload_content)
+
+    loop = asyncio.get_running_loop()
+    response_future: asyncio.Future[dict] = loop.create_future()
+    _pending_ticket_responses[token_tsn] = response_future
+    _pending_ticket_responses[ticket] = response_future
+    print(f"TX outputjs-alarm ticket=0x{ticket:02X} tsn=0x{token_tsn:02X}: {_fmt_hex(frame)}")
+    try:
+        await _ble_write(frame)
+        try:
+            return await asyncio.wait_for(response_future, timeout=timeout)
+        except asyncio.TimeoutError as e:
+            raise TimeoutError(f"timeout waiting for COMMON_RESPONSE to ticket 0x{ticket:02X}") from e
+    finally:
+        _pending_ticket_responses.pop(token_tsn, None)
+        _pending_ticket_responses.pop(ticket, None)
+
 
 async def _ble_write(data: bytes):
     for i in range(0, len(data), 20):
@@ -274,13 +475,12 @@ async def _send_auth_frame(msg_type: int, body: bytes):
 
 async def _send_control(command: int, need_response: bool = True,
                         payload_content: bytes = b''):
+    if need_response:
+        await _send_ticketed_control(command, payload_content)
+        return
     frame = _build_control_frame(command, need_response, payload_content)
     await _ble_write(frame)
 
-
-# ════════════════════════════════════════════════════════════════════════════
-# Display helpers
-# ════════════════════════════════════════════════════════════════════════════
 
 def _fmt_hex(data: bytes) -> str:
     return ' '.join(
@@ -301,9 +501,49 @@ def _print_temps(probes: list[dict], tag: str, tsn: int):
     print(f"TEMP [{now}] {tag} tsn={tsn:3d}  {probe_str}")
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# BLE notification handler
-# ════════════════════════════════════════════════════════════════════════════
+def _handle_raw_v5_packet(data: bytes) -> bool:
+    global _last_push_probes
+
+    marker = _live_ticket_marker(data)
+    if marker is not None:
+        ticket = data[5]
+        _offer_ticket(ticket)
+        print(f"TICKET fresh: marker=0x{marker:02X} ticket=0x{ticket:02X}")
+
+        if marker == 0xD4:
+            return False
+
+        probes = _parse_probe_temperatures(data[6:])
+        _last_push_probes = probes
+        _print_temps(probes, 'PUSH', ticket)
+        return True
+
+    raw_response = _parse_raw_ticket_response(data)
+    if raw_response is None:
+        return False
+
+    ticket = raw_response['ticket']
+    _finish_pending_response(ticket, raw_response)
+
+    cmd = raw_response['command']
+    payload = raw_response['payload_content']
+    if cmd == CC.BATTERY_LEVEL_RESPONSE:
+        level = payload[0] if payload else '?'
+        print(f"BATTERY [RAW] ticket=0x{ticket:02X}: {level}%")
+    elif cmd == CC.PROBE_TEMPERATURE_RESPONSE:
+        probes = _parse_probe_temperatures(payload)
+        _last_push_probes = probes
+        _print_temps(probes, 'RESP', ticket)
+    elif cmd == CC.TEMPERATURE_UNIT_RESPONSE:
+        unit = 'Fahrenheit' if payload and payload[0] else 'Celsius'
+        print(f"TEMP_UNIT [RAW] ticket=0x{ticket:02X}: {unit}")
+    elif cmd == CC.COMMON_RESPONSE:
+        print(f"COMMON_RESPONSE [RAW] ticket=0x{ticket:02X}: status={raw_response['status']}")
+    else:
+        print(f"CONTROL [RAW] [{raw_response['name']}] ticket=0x{ticket:02X} "
+              f"payload={payload.hex().upper()}")
+    return True
+
 
 async def _on_notify(sender, data: bytes):
     global _last_push_probes
@@ -313,9 +553,9 @@ async def _on_notify(sender, data: bytes):
     if len(data) < 2:
         return
 
-    # Control-channel frames: ControlCommands 257-285 have data[1]==0x01 in LE.
-    # COMMON_RESPONSE (0xFFFF) has both bytes 0xFF.
-    # Auth frames (0x00-0x03, 0x21-0x26) have data[1]==0x00 or small values.
+    if _handle_raw_v5_packet(data):
+        return
+
     is_control = (data[1] == 0x01) or (data[0] == 0xFF and data[1] == 0xFF)
 
     if is_control:
@@ -323,7 +563,7 @@ async def _on_notify(sender, data: bytes):
         if msg is None:
             return
         cmd = msg['command']
-        is_push = msg['source'] == 1   # bit0=1: DEVICE autonomous push (D4)
+        is_push = msg['source'] == 1   
         src = 'PUSH' if is_push else 'RESP'
 
         if cmd == CC.PROBE_TEMPERATURE_RESPONSE:
@@ -332,8 +572,6 @@ async def _on_notify(sender, data: bytes):
                 _last_push_probes = probes
                 _print_temps(probes, 'PUSH', msg['rx_tsn'])
             else:
-                # 3D RESP frames use per-probe XOR masks over the uint16-LE °C values.
-                # Unmask first, then decode identically to PUSH frames.
                 unmasked = _unmask_resp_payload(msg['payload_content'])
                 probes = _parse_probe_temperatures(unmasked)
                 _last_push_probes = probes
@@ -352,6 +590,9 @@ async def _on_notify(sender, data: bytes):
                 status = struct.unpack_from('<H', msg['payload_content'])[0]
             else:
                 status = '?'
+            msg['status'] = status
+            _finish_pending_response(msg['rx_tsn'], msg)
+            _finish_pending_response(msg['rx_tsn'] ^ _XOR_KEY[1], msg)
             print(f"COMMON_RESPONSE [{src}]: status={status}")
 
         else:
@@ -359,7 +600,6 @@ async def _on_notify(sender, data: bytes):
                   f"payload={msg['payload_content'].hex().upper()}")
         return
 
-    # ── Auth / OTA frames ────────────────────────────────────────────────────
     cmd = data[0]
 
     if cmd == 0x01 and data[1] == 0x00:
@@ -377,9 +617,7 @@ async def _on_notify(sender, data: bytes):
         print("AUTH: accepted")
         await _client.write_gatt_char(WRITE_UUID, bytes([0x21, 0x00, 0x00, 0x00]),
                                       response=False)
-        await asyncio.sleep(0.2)
-        await _send_control(CC.PROBE_TEMPERATURE_REQUEST, need_response=True)
-        print("Probe temperature requested\n")
+        asyncio.create_task(_initial_probe_request())
         return
 
     if cmd in (0x1D, 0x22):
@@ -389,31 +627,90 @@ async def _on_notify(sender, data: bytes):
 
 
 async def _on_notify2(sender, data: bytes):
-    """Raw log for bbb3 — second notify characteristic (per Greywood)."""
     print(f"RX2: {_fmt_hex(data)}")
+    _handle_raw_v5_packet(data)
 
-
-# ════════════════════════════════════════════════════════════════════════════
-# Main loop (auto-reconnect on disconnect or BLE error)
-# ════════════════════════════════════════════════════════════════════════════
 
 async def _poll_loop():
-    """Periodically request probe temperatures so updates continue after button press."""
     while True:
         await asyncio.sleep(POLL_INTERVAL)
         if _client and _client.is_connected:
+            if time.monotonic() - _last_ticket_mono < POLL_INTERVAL * 2:
+                continue
+            try:
+                await _send_control(CC.PROBE_TEMPERATURE_REQUEST, need_response=True)
+            except TimeoutError as e:
+                print(f"Probe temperature request skipped: {e}")
+
+
+async def _initial_probe_request():
+    await asyncio.sleep(0.5)
+    if _client and _client.is_connected:
+        try:
             await _send_control(CC.PROBE_TEMPERATURE_REQUEST, need_response=True)
+            print("Probe temperature requested\n")
+        except TimeoutError as e:
+            print(f"Initial probe temperature request skipped: {e}\n")
+
+
+async def _input_loop():
+    loop = asyncio.get_event_loop()
+    print("Alarm input: <temp 20-82> for probe 1, or <probe:temp>, or <probe:off>")
+    while True:
+        try:
+            line = await loop.run_in_executor(None, input, "Alarm input> ")
+        except Exception:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            if ':' in line:
+                p_str, t_str = line.split(':', 1)
+                probe = int(p_str.strip())
+                t_str = t_str.strip()
+            else:
+                probe = 1
+                t_str = line.strip()
+            
+            if t_str.lower() == 'off':
+                temp = None
+            else:
+                temp = int(t_str)
+                if not (20 <= temp <= 82):
+                    print(f"Temperature must be 20-82°C (got {temp})")
+                    continue
+        except ValueError:
+            print("Usage: <temp>  or  <probe:temp>  or  <probe:off>")
+            continue
+        
+        if _client and _client.is_connected:
+            await set_probe_alarm(probe, temp)
+        else:
+            _alarm_targets[probe - 1] = temp
+            label = f"{temp}°C" if temp is not None else "disabled"
+            print(f"ALARM P{probe} queued: {label} (not connected yet)")
 
 
 async def main():
-    global _client, _tx_tsn, _last_push_probes
+    global _client, _tx_tsn, _last_push_probes, _ticket_queue, _last_ticket
 
-    print(f"BMT01 version 2026-05-03 — connecting to {MAC}")
+    print(f"BMT01 version 2026-05-03 rev B — connecting to {MAC}")
     print(f"XOR key (MD5 raw bytes): {_XOR_KEY.hex()}\n")
+    _ticket_queue = asyncio.Queue(maxsize=1)
+
+    input_task = asyncio.create_task(_input_loop())
 
     while True:
         _tx_tsn = 0
         _last_push_probes = None
+        _last_ticket = None
+        _pending_ticket_responses.clear()
+        while _ticket_queue is not None:
+            try:
+                _ticket_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
         try:
             async with BleakClient(MAC, timeout=20) as client:
                 _client = client
@@ -424,7 +721,7 @@ async def main():
                     await client.start_notify(NOTIFY_UUID2, _on_notify2)
                     print("bbb3 subscribed")
                 except Exception:
-                    pass  # bbb3 may not be present on all firmware versions
+                    pass  
 
                 await _send_auth_frame(0x00, _aes_encrypt(APP_UUID).encode())
                 print("AUTH: request sent\n")
@@ -443,6 +740,7 @@ async def main():
             print(f"BLE error: {e} — retry in 5 s...")
             await asyncio.sleep(5)
         except KeyboardInterrupt:
+            input_task.cancel()
             print("\nStopped.")
             return
 
