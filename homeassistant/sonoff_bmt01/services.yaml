@@ -1,0 +1,136 @@
+set_probe_alarm:
+  name: Set probe alarm
+  description: Set a target temperature alarm for a specific probe (None/omit to disable).
+  fields:
+    config_entry_id:
+      name: Device
+      description: The BMT01 config entry.
+      required: true
+      selector:
+        config_entry:
+          integration: sonoff_bmt01
+    probe:
+      name: Probe
+      description: Probe number (1–4).
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 4
+          mode: box
+    temp_c:
+      name: Target temperature (°C)
+      description: Target alarm temperature in Celsius. Omit to disable the alarm.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 300
+          unit_of_measurement: "°C"
+          mode: box
+
+set_probe_range_alarm:
+  name: Set probe range alarm
+  description: Set a lower/upper range alarm for a specific probe.
+  fields:
+    config_entry_id:
+      name: Device
+      description: The BMT01 config entry.
+      required: true
+      selector:
+        config_entry:
+          integration: sonoff_bmt01
+    probe:
+      name: Probe
+      description: Probe number (1–4).
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 4
+          mode: box
+    lower_c:
+      name: Lower temperature (°C)
+      description: Lower alarm bound in Celsius.
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 300
+          unit_of_measurement: "°C"
+          mode: box
+    upper_c:
+      name: Upper temperature (°C)
+      description: Upper alarm bound in Celsius.
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 300
+          unit_of_measurement: "°C"
+          mode: box
+
+set_temperature_unit:
+  name: Set temperature unit
+  description: Switch the device between Celsius and Fahrenheit display.
+  fields:
+    config_entry_id:
+      name: Device
+      description: The BMT01 config entry.
+      required: true
+      selector:
+        config_entry:
+          integration: sonoff_bmt01
+    unit:
+      name: Unit
+      description: "C for Celsius, F for Fahrenheit."
+      required: true
+      selector:
+        select:
+          options:
+            - "C"
+            - "F"
+
+set_probe_calibration:
+  name: Set probe calibration
+  description: Apply a calibration offset (°C) to a probe. Range −15 to +15.
+  fields:
+    config_entry_id:
+      name: Device
+      description: The BMT01 config entry.
+      required: true
+      selector:
+        config_entry:
+          integration: sonoff_bmt01
+    probe:
+      name: Probe
+      description: Probe number (1–4).
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 4
+          mode: box
+    offset_c:
+      name: Offset (°C)
+      description: Calibration offset in Celsius (−15 to +15).
+      required: true
+      selector:
+        number:
+          min: -15
+          max: 15
+          step: 0.5
+          unit_of_measurement: "°C"
+          mode: box
+
+request_battery:
+  name: Request battery level
+  description: Trigger a fresh battery level reading from the device.
+  fields:
+    config_entry_id:
+      name: Device
+      description: The BMT01 config entry.
+      required: true
+      selector:
+        config_entry:
+          integration: sonoff_bmt01
